@@ -47,6 +47,7 @@ int main(int argc, char *argv[]) {
              "Section: utils\n"
              "Priority: optional\n"
              "Architecture: arm64\n"
+             "Maintainer: Exec2deb Team\n"  // 'Maintainer' alanını güncelledik
              "Description: %s\n", 
              file_name, version, description);
 
