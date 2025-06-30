@@ -2,7 +2,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <unistd.h>
 #include <sys/stat.h>
+#include <limits.h>
 
 void capitalize_first_letter(char *str) {
     if (str && str[0]) {
@@ -10,36 +12,54 @@ void capitalize_first_letter(char *str) {
     }
 }
 
-// Geçici dosyayı silme
+int is_safe_string(const char *str) {
+    while (*str) {
+        if (!isalnum((unsigned char)*str) && *str != '.' && *str != '_' && *str != '-') {
+            return 0;
+        }
+        str++;
+    }
+    return 1;
+}
+
 void remove_directory(const char *path) {
-    char command[256];
-    snprintf(command, sizeof(command), "rm -rf %s", path);
-    system(command);
+    char cmd[PATH_MAX + 64];
+    snprintf(cmd, sizeof(cmd), "rm -rf -- '%s'", path);
+    system(cmd);
 }
 
 int main(int argc, char *argv[]) {
-    if (argc != 3) {
-        fprintf(stderr, "Usage: %s <file_path> <version>\n", argv[0]);
+    int dry_run = 0;
+
+    if (argc < 3 || argc > 4) {
+        fprintf(stderr, "Usage: %s <file_path> <version> [--dry-run]\n", argv[0]);
         return 1;
     }
 
-    char *file_path = argv[1];  // Yürütülebilir dosyanın tam yolu
-    char *version = argv[2];     // Versiyon numarası
-
-    // Dosya ismini çıkartma (tam yoldan)
-    char *file_name = strrchr(file_path, '/');
-    if (file_name != NULL) {
-        file_name++;  // '/' karakterinden sonrasını al
-    } else {
-        file_name = file_path;  // Eğer yol yoksa, dosya adını olduğu gibi al
+    if (argc == 4 && strcmp(argv[3], "--dry-run") == 0) {
+        dry_run = 1;
     }
 
-    // Açıklama oluşturma: Dosya adı ile açıklama başlatılır
+    char *file_path = argv[1];
+    char *version = argv[2];
+
+    if (!is_safe_string(version)) {
+        fprintf(stderr, "Error: Invalid characters in version.\n");
+        return 1;
+    }
+
+    char *file_name = strrchr(file_path, '/');
+    file_name = file_name ? file_name + 1 : file_path;
+
+    if (!is_safe_string(file_name)) {
+        fprintf(stderr, "Error: Invalid characters in file name.\n");
+        return 1;
+    }
+
     char description[256];
     snprintf(description, sizeof(description), "%s packaged version", file_name);
-    capitalize_first_letter(description);  // Açıklamadaki ilk harfi büyük yap
+    capitalize_first_letter(description);
 
-    // Control dosyasındaki içerik
     char control_data[1024];
     snprintf(control_data, sizeof(control_data),
              "Package: %s\n"
@@ -47,57 +67,63 @@ int main(int argc, char *argv[]) {
              "Section: utils\n"
              "Priority: optional\n"
              "Architecture: arm64\n"
-             "Maintainer: Exec2deb Team\n"  // 'Maintainer' alanını güncelledik
-             "Description: %s\n", 
+             "Maintainer: Exec2deb Team\n"
+             "Description: %s\n",
              file_name, version, description);
 
-    // Geçici dizinleri oluştur ve DEBIAN kontrol dosyasını yaz
-    char command[512];
-    snprintf(command, sizeof(command), "mkdir -p /tmp/deb-package/DEBIAN /tmp/deb-package/usr/local/bin");
-    system(command);
+    const char *base_dir = "/tmp/deb-package";
+    char debian_dir[PATH_MAX], bin_dir[PATH_MAX], control_path[PATH_MAX];
+    snprintf(debian_dir, sizeof(debian_dir), "%s/DEBIAN", base_dir);
+    snprintf(bin_dir, sizeof(bin_dir), "%s/usr/local/bin", base_dir);
+    snprintf(control_path, sizeof(control_path), "%s/control", debian_dir);
 
-    FILE *control_file = fopen("/tmp/deb-package/DEBIAN/control", "w");
-    if (!control_file) {
-        perror("Failed to create control file");
+    char cmd[PATH_MAX * 2];
+
+    snprintf(cmd, sizeof(cmd), "mkdir -p '%s' '%s'", debian_dir, bin_dir);
+    if (system(cmd) != 0) {
+        fprintf(stderr, "Failed to create directory structure.\n");
         return 1;
     }
 
-    fputs(control_data, control_file);  // Control verisini yaz
+    FILE *control_file = fopen(control_path, "w");
+    if (!control_file) {
+        perror("Failed to write control file");
+        return 1;
+    }
+    fputs(control_data, control_file);
     fclose(control_file);
 
-    // Yürütülebilir dosyayı kopyala
-    snprintf(command, sizeof(command), "cp %s /tmp/deb-package/usr/local/bin/", file_path);
-    int result = system(command);
-    if (result != 0) {
-        fprintf(stderr, "Failed to copy executable file\n");
+    snprintf(cmd, sizeof(cmd), "cp '%s' '%s/'", file_path, bin_dir);
+    if (system(cmd) != 0) {
+        fprintf(stderr, "Failed to copy executable file.\n");
+        remove_directory(base_dir);
         return 1;
     }
 
-    // .deb paketini oluştur
-    snprintf(command, sizeof(command), "dpkg-deb --build /tmp/deb-package %s_%s_arm64.deb", file_name, version);
-    result = system(command);
-    
-    if (result != 0) {
-        fprintf(stderr, "Failed to create the .deb package\n");
+    char deb_file[PATH_MAX];
+    snprintf(deb_file, sizeof(deb_file), "%s_%s_arm64.deb", file_name, version);
+    snprintf(cmd, sizeof(cmd), "dpkg-deb --build '%s' '%s'", base_dir, deb_file);
+
+    if (system(cmd) != 0) {
+        fprintf(stderr, "Failed to create .deb package.\n");
+        remove_directory(base_dir);
         return 1;
     }
 
-    printf("Created package: %s_%s_arm64.deb\n", file_name, version);
+    printf("Package created: %s\n", deb_file);
 
-    // .deb paketini sistem geneline kur
-    snprintf(command, sizeof(command), "sudo dpkg -i %s_%s_arm64.deb", file_name, version);
-    result = system(command);
-    
-    if (result != 0) {
-        fprintf(stderr, "Failed to install the .deb package\n");
-        return 1;
+    if (!dry_run) {
+        snprintf(cmd, sizeof(cmd), "sudo dpkg -i '%s'", deb_file);
+        if (system(cmd) != 0) {
+            fprintf(stderr, "Failed to install .deb package.\n");
+            remove_directory(base_dir);
+            return 1;
+        }
+        printf("Package installed successfully.\n");
+    } else {
+        printf("Dry-run mode: installation skipped.\n");
     }
 
-    // Geçici dizini silme (veya başka bir işlem yapmak isterseniz)
-    remove_directory("/tmp/deb-package");
-
-    // Kaynak dosya artık kurulum için /usr/local/bin altında olacak
-    printf("Installation successful. Package and executable are ready.\n");
-
+    remove_directory(base_dir);
     return 0;
 }
