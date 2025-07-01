@@ -26,7 +26,6 @@ int is_safe_string(const char *str) {
     return 1;
 }
 
-// Debian package name normalization: lowercase, replace invalid chars
 void normalize_package_name(char *name) {
     for (size_t i = 0; i < strlen(name); i++) {
         if (!isalnum((unsigned char)name[i]) && name[i] != '+' && name[i] != '.' && name[i] != '-') {
@@ -65,9 +64,10 @@ char *detect_arch() {
             return "amd64";
         else if (strcmp(uname_buf.machine, "aarch64") == 0)
             return "arm64";
-        else
+        else {
             snprintf(arch, sizeof(arch), "%s", uname_buf.machine);
-        return arch;
+            return arch;
+        }
     }
     return "all";
 }
@@ -143,6 +143,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     fputs(control_data, control_file);
+    fputs("\n", control_file); // UYARIYI ENGELLEMEK İÇİN BOŞ SATIR
     fclose(control_file);
 
     char dest_path[PATH_MAX];
@@ -156,7 +157,7 @@ int main(int argc, char *argv[]) {
 
     char deb_file[PATH_MAX];
     snprintf(deb_file, sizeof(deb_file), "%s_%s_%s.deb", package_name, version, arch);
-    char *dpkg_args[] = {"dpkg-deb", "--build", (char *)base_dir, deb_file, NULL};
+    char *dpkg_args[] = {"dpkg-deb", "--build", "--root-owner-group", (char *)base_dir, deb_file, NULL};
     if (run_command(dpkg_args) != 0) {
         fprintf(stderr, "Failed to build deb package.\n");
         remove_directory(base_dir);
